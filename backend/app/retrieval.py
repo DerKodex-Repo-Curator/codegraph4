@@ -75,12 +75,13 @@ def normalize_scores(scored_list):
     return [(c, (s - min_s) / (max_s - min_s)) for c, s in scored_list]
 
 
-def hybrid_retrieval(query, chunks, top_k=5, bm25_weight=0.5):
+def hybrid_retrieval(query, chunks, top_k=5, bm25_weight=0.3, repo_name=None):
     """
     Combines BM25 and embedding scores into one ranked list.
-    bm25_weight controls the balance (0.5 = equal weight to both).
+    repo_name filters the embedding search to only this repo's chunks
+    (BM25 already only sees whatever's in 'chunks', so no change needed there).
     """
-    
+    # --- BM25 scoring (unchanged) ---
     bm25 = build_bm25_index(chunks)
     tokenized_query = tokenize(query)
     bm25_raw_scores = bm25.get_scores(tokenized_query)
@@ -88,34 +89,23 @@ def hybrid_retrieval(query, chunks, top_k=5, bm25_weight=0.5):
     bm25_normalized = normalize_scores(bm25_scored)
     bm25_scores_by_id = {chunk_id(c): s for c, s in bm25_normalized}
 
-    # --- Embedding scoring ---
-    # query_embedding = get_embedding(query)
-    # embed_scored = []
-    # for c in chunks:
-    #     chunk_embedding = get_embedding(c["code"])
-    #     score = cosine_similarity(query_embedding, chunk_embedding)
-    #     embed_scored.append((c, score))
-    # embed_normalized = normalize_scores(embed_scored)
-    # embed_scores_by_id = {chunk_id(c): s for c, s in embed_normalized}
-    vector_candidates = vector_retrieval(query, top_k=20)
+    # --- Embedding scoring via Chroma, now filtered to this repo ---
+    vector_candidates = vector_retrieval(query, top_k=20, repo_name=repo_name)
     embed_scores_by_id = {}
     for rank, c in enumerate(vector_candidates):
         cid = chunk_id(c)
-        # Convert rank position into a 0-1 score: best match = 1.0, worst = close to 0
         embed_scores_by_id[cid] = 1 - (rank / len(vector_candidates))
 
-
-    # --- Combine ---
+    # --- Combine (unchanged) ---
     combined = []
     for c in chunks:
         cid = chunk_id(c)
         bm25_score = bm25_scores_by_id.get(cid, 0)
-        embed_score = embed_scores_by_id.get(cid, 0)  # 0 if not in Chroma's top 20
+        embed_score = embed_scores_by_id.get(cid, 0)
         final_score = (bm25_weight * bm25_score) + ((1 - bm25_weight) * embed_score)
         combined.append((c, final_score))
 
     combined.sort(key=lambda x: x[1], reverse=True)
     return [c for c, score in combined[:top_k]]
-
 def chunk_id(chunk):
     return f"{chunk['file_path']}::{chunk['symbol_name']}"
